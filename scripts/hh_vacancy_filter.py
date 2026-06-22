@@ -61,6 +61,33 @@ IN_PATTERNS = {
 }
 
 
+SALARY_MIN = 30_000   # руб/мес, по директиве Архивариуса от 19.06.2026
+SALARY_MAX = 100_000
+
+
+def _parse_salary_krub(text: str):
+    """Извлекает верхнюю границу зарплаты в тысячах рублей из строки вида
+    'от 30 000 ₽', '50 000 — 80 000 ₽', 'до 120 000 ₽'. Возвращает тысячи или None.
+    Парсит только цифры с явной валютой ₽ (или 'руб'/'рублей'), игнорирует $ / €."""
+    if not text:
+        return None
+    if not any(s in text for s in ('₽', 'руб', 'RUB')):
+        return None
+    nums = re.findall(r'[\d\s\u00a0]+', text)
+    nums_clean = []
+    for n in nums:
+        n_clean = n.replace('\u00a0', '').replace(' ', '').strip()
+        if n_clean.isdigit():
+            v = int(n_clean)
+            # фильтруем мусор: день/час/мес обычно ≤ 500, 'месяц' значит тысячи
+            if 5_000 <= v <= 5_000_000:
+                nums_clean.append(v)
+    if not nums_clean:
+        return None
+    # Берём максимум — это "верхняя вилка" или "от"
+    return max(nums_clean) // 1000  # в тысячах
+
+
 def classify(vac: Vacancy) -> tuple[str, list[str]]:
     """Возвращает ('in' | 'out' | 'review', [причины])."""
     text = f"{vac.title} {vac.company} {vac.snippet}"
@@ -70,11 +97,18 @@ def classify(vac: Vacancy) -> tuple[str, list[str]]:
         if pat.search(text):
             out_hits.append(name)
 
+    # Salary gate: выше 100к без явной автоматизируемости = OUT
+    salary_k = _parse_salary_krub(vac.salary)
+    if salary_k is not None and salary_k > SALARY_MAX:
+        out_hits.append(f"salary>{SALARY_MAX}k ({vac.salary})")
+
     if out_hits:
         return "out", out_hits
 
     in_hits = [name for name, pat in IN_PATTERNS.items() if pat.search(text)]
     if in_hits:
+        if salary_k is not None and salary_k < SALARY_MIN:
+            in_hits.append(f"salary<{SALARY_MIN}k")
         return "in", in_hits
 
     return "review", ["не подошёл ни под IN, ни под OUT — нужно прочитать вручную"]
